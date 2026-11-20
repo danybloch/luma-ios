@@ -30,12 +30,67 @@ struct ContentView: View {
         }
         .onChange(of: player.tracks.isEmpty) { _, empty in if empty { showPlayer = false } }
         .fullScreenCover(isPresented: $showPlayer) { NowPlayingView() }
-        .fileImporter(isPresented: $showImport, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let urls): Task { await player.importFiles(urls) }
-            case .failure(let error): player.error = error.localizedDescription
+        
+.fileImporter(
+    isPresented: $showImport,
+    allowedContentTypes: [.audio, .folder],
+    allowsMultipleSelection: true
+) { result in
+    switch result {
+    case .success(let selectedURLs):
+        Task {
+            var audioURLs: [URL] = []
+            var scopedFolders: [URL] = []
+
+            for url in selectedURLs {
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+
+                if values?.isDirectory == true {
+                    guard url.startAccessingSecurityScopedResource() else {
+                        continue
+                    }
+
+                    scopedFolders.append(url)
+
+                    if let enumerator = FileManager.default.enumerator(
+                        at: url,
+                        includingPropertiesForKeys: [.isRegularFileKey, .contentTypeKey],
+                        options: [.skipsHiddenFiles]
+                    ) {
+                        for case let fileURL as URL in enumerator {
+                            let fileValues = try? fileURL.resourceValues(
+                                forKeys: [.isRegularFileKey, .contentTypeKey]
+                            )
+
+                            if fileValues?.isRegularFile == true,
+                               fileValues?.contentType?.conforms(to: .audio) == true {
+                                audioURLs.append(fileURL)
+                            }
+                        }
+                    }
+                } else {
+                    audioURLs.append(url)
+                }
             }
+
+            defer {
+                for folder in scopedFolders {
+                    folder.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            guard !audioURLs.isEmpty else {
+                player.error = "No supported audio files found in the selection."
+                return
+            }
+
+            await player.importFiles(audioURLs)
         }
+
+    case .failure(let error):
+        player.error = error.localizedDescription
+    }
+}
         .modifier(PlayerFeedback(active: !showPlayer))
     }
 }
